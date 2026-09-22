@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mamba NIDS — Command Center</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0e17;
+            color: #c9d1d9;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #161b22, #0d1117);
+            border-bottom: 1px solid #30363d;
+            padding: 20px 40px;
+            display: flex; align-items: center; gap: 20px;
+        }
+        .header h1 { color: #58a6ff; font-size: 24px; }
+        .header .subtitle { color: #8b949e; font-size: 12px; }
+        .status { padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+        .status.safe { background: #0d3321; color: #3fb950; border: 1px solid #238636; }
+        .status.alert { background: #3d1f1f; color: #f85149; border: 1px solid #da3633; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+        @keyframes flash-bg { 0% { background: #1a0000; } 100% { background: #0a0e17; } }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            padding: 20px 40px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-card .value { font-size: 32px; font-weight: bold; color: #58a6ff; }
+        .stat-card .label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+        .stat-card.danger .value { color: #f85149; }
+        .stat-card.success .value { color: #3fb950; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            padding: 0 40px 40px;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card h2 { color: #58a6ff; font-size: 16px; margin-bottom: 16px; }
+
+        .log-entry {
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 4px;
+            font-size: 13px;
+            display: flex; justify-content: space-between; align-items: center;
+            transition: all 0.3s ease;
+        }
+        .log-entry.normal { background: #0d1117; }
+        .log-entry.attack { background: #3d1f1f; border-left: 3px solid #f85149; }
+        .log-entry.blocked { background: #3d1f1f; border-left: 3px solid #da3633; opacity: 0.7; }
+        .log-entry .tag {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .tag.safe { background: #0d3321; color: #3fb950; }
+        .tag.danger { background: #3d1f1f; color: #f85149; }
+
+        .blocked-ip {
+            display: inline-block;
+            background: #3d1f1f;
+            color: #f85149;
+            padding: 4px 10px;
+            border-radius: 6px;
+            margin: 3px;
+            font-size: 12px;
+        }
+
+        .connection-status {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .connection-status.connected { background: #3fb950; }
+        .connection-status.disconnected { background: #f85149; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>&#x1F40D; MAMBA NIDS</h1>
+            <span class="subtitle">Real-Time Cyber Attack Detection using State Space Models</span>
+        </div>
+        <span class="status safe" id="systemStatus">SYSTEM SAFE</span>
+        <span style="margin-left: auto; color: #8b949e;">
+            <span class="connection-status disconnected" id="wsStatus"></span>
+            <span id="wsLabel">Disconnected</span>
+            &nbsp;|&nbsp;
+            <span id="clock"></span>
+        </span>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="value" id="totalPackets">0</div>
+            <div class="label">Total Analyzed</div>
+        </div>
+        <div class="stat-card danger">
+            <div class="value" id="attackCount">0</div>
+            <div class="label">Attacks Detected</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" id="blockedCount">0</div>
+            <div class="label">IPs Blocked</div>
+        </div>
+        <div class="stat-card success">
+            <div class="value" id="avgConfidence">—</div>
+            <div class="label">Avg Confidence</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h2>&#x1F4E1; Live Traffic Feed</h2>
+            <div id="trafficLog" style="max-height: 500px; overflow-y: auto;"></div>
+        </div>
+        <div class="card">
+            <h2>&#x1F6AB; Blocked IPs (<span id="blockedTotal">0</span>)</h2>
+            <div id="blockedIPs" style="max-height: 500px; overflow-y: auto;"></div>
+        </div>
+    </div>
+
+    <script>
+        let totalPackets = 0, attackCount = 0, confidenceSum = 0;
+        const blockedSet = new Set();
+        let ws;
+        let alertTimeout;
+
+        function connect() {
+            const host = window.location.hostname || 'localhost';
+            const port = window.location.port || '8000';
+            ws = new WebSocket(`ws://${host}:${port}/ws/live-traffic`);
+
+            ws.onopen = () => {
+                document.getElementById('wsStatus').className = 'connection-status connected';
+                document.getElementById('wsLabel').textContent = 'Connected';
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsStatus').className = 'connection-status disconnected';
+                document.getElementById('wsLabel').textContent = 'Reconnecting...';
+                setTimeout(connect, 3000);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                totalPackets++;
+                confidenceSum += data.confidence;
+
+                if (data.is_attack) {
+                    attackCount++;
+                    document.getElementById('systemStatus').className = 'status alert';
+                    document.getElementById('systemStatus').textContent = `\u26A0 ATTACK: ${data.prediction}`;
+                    document.body.style.animation = 'flash-bg 0.3s ease';
+                    setTimeout(() => document.body.style.animation = '', 300);
+                    clearTimeout(alertTimeout);
+                    alertTimeout = setTimeout(() => {
+                        document.getElementById('systemStatus').className = 'status safe';
+                        document.getElementById('systemStatus').textContent = 'SYSTEM SAFE';
+                    }, 3000);
+                }
+
+                if (data.blocked) blockedSet.add(data.source_ip);
+
+                document.getElementById('totalPackets').textContent = totalPackets.toLocaleString();
+                document.getElementById('attackCount').textContent = attackCount.toLocaleString();
+                document.getElementById('blockedCount').textContent = blockedSet.size;
+                document.getElementById('blockedTotal').textContent = blockedSet.size;
+                document.getElementById('avgConfidence').textContent =
+                    (confidenceSum / totalPackets * 100).toFixed(1) + '%';
+
+                const log = document.getElementById('trafficLog');
+                const entry = document.createElement('div');
+                const cls = data.blocked ? 'blocked' : (data.is_attack ? 'attack' : 'normal');
+                const tagCls = data.is_attack ? 'danger' : 'safe';
+                const tagText = data.is_attack ? data.prediction : 'Normal';
+                entry.className = `log-entry ${cls}`;
+                entry.innerHTML = `
+                    <span>${new Date(data.timestamp).toLocaleTimeString()} &nbsp; ${data.source_ip}</span>
+                    <span>
+                        <span class="tag ${tagCls}">${tagText}</span>
+                        &nbsp; ${(data.confidence * 100).toFixed(1)}%
+                        ${data.blocked ? ' &nbsp; &#x1F6AB;' : ''}
+                    </span>
+                `;
+                log.insertBefore(entry, log.firstChild);
+                if (log.children.length > 200) log.removeChild(log.lastChild);
+
+                const blockedDiv = document.getElementById('blockedIPs');
+                blockedDiv.innerHTML = Array.from(blockedSet).sort()
+                    .map(ip => `<span class="blocked-ip">\u{1F6AB} ${ip}</span>`).join('');
+            };
+        }
+
+        connect();
+
+        setInterval(() => {
+            document.getElementById('clock').textContent = new Date().toLocaleString();
+        }, 1000);
+    </script>
+</body>
+</html>

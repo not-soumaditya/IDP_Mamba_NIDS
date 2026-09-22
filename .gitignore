@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+nids_mamba_env/
+
+# Model checkpoints
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+
+# Data
+data/raw/
+data/processed/
+*.csv
+*.parquet
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+extracted_report.txt
